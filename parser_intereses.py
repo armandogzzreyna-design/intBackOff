@@ -1,41 +1,31 @@
 import os
 import re
+import unicodedata
 from pathlib import Path
 
 import pandas as pd
 import pdfplumber
 
 
-PORTFOLIO_MAPPING = {
-    r"(?i)(siefore\s+)?invercap\s+basica\s+60[- ]64": "SB 60-64",
-    r"(?i)SB\s*60[- ]64": "SB 60-64",
-    r"(?i)60.?64": "SB 60-64",
-    r"(?i)(siefore\s+)?invercap\s+basica\s+65[- ]69": "SB 65-69",
-    r"(?i)SB\s*65[- ]69": "SB 65-69",
-    r"(?i)65.?69": "SB 65-69",
-    r"(?i)(siefore\s+)?invercap\s+basica\s+70[- ]74": "SB 70-74",
-    r"(?i)SB\s*70[- ]74": "SB 70-74",
-    r"(?i)70.?74": "SB 70-74",
-    r"(?i)(siefore\s+)?invercap\s+basica\s+75[- ]79": "SB 75-79",
-    r"(?i)SB\s*75[- ]79": "SB 75-79",
-    r"(?i)75.?79": "SB 75-79",
-    r"(?i)(siefore\s+)?invercap\s+basica\s+80[- ]84": "SB 80-84",
-    r"(?i)SB\s*80[- ]84": "SB 80-84",
-    r"(?i)80.?84": "SB 80-84",
-    r"(?i)(siefore\s+)?invercap\s+basica\s+85[- ]89": "SB 85-89",
-    r"(?i)SB\s*85[- ]89": "SB 85-89",
-    r"(?i)85.?89": "SB 85-89",
-    r"(?i)(siefore\s+)?invercap\s+basica\s+90[- ]94": "SB 90-94",
-    r"(?i)SB\s*90[- ]94": "SB 90-94",
-    r"(?i)90.?94": "SB 90-94",
-    r"(?i)(siefore\s+)?invercap\s+basica\s+95[- ]99": "SB 95-99",
-    r"(?i)SB\s*95[- ]99": "SB 95-99",
-    r"(?i)95.?99": "SB 95-99",
-    r"(?i)(siefore\s+)?invercap\s+basica\s+inicial": "SB INICIAL",
-    r"(?i)SB\s+INICIAL": "SB INICIAL",
-    r"(?i)(siefore\s+)?invercap\s+basica\s+de\s+pensiones": "SB PENSIONES",
-    r"(?i)SB\s+PENSIONES": "SB PENSIONES",
+RANGOS_SIEFORE = {
+    "60-64": "SB 60-64",
+    "65-69": "SB 65-69",
+    "70-74": "SB 70-74",
+    "75-79": "SB 75-79",
+    "80-84": "SB 80-84",
+    "85-89": "SB 85-89",
+    "90-94": "SB 90-94",
+    "95-99": "SB 95-99",
 }
+
+PALABRAS_CONTEXTO_PORTFOLIO = (
+    "SB",
+    "SIEFORE",
+    "BASICA",
+    "BASICO",
+    "FONDO",
+    "PORTFOLIO",
+)
 
 FONDO_MAPPING = {
     "SB 60-64": "INVER60",
@@ -47,19 +37,106 @@ FONDO_MAPPING = {
     "SB 90-94": "INVER90",
     "SB 95-99": "INVER95",
     "SB INICIAL": "INVERINICIAL",
-    "SB PENSIONES": "INVERPENSIONES",
+    "SB PENSIONES": "INVER00",
 }
 
 
-def normalizar_portfolio(texto):
+def limpiar_texto_pdf(texto):
     if not texto or pd.isna(texto):
+        return ""
+
+    texto = str(texto)
+    texto = unicodedata.normalize("NFKD", texto)
+    texto = "".join(char for char in texto if not unicodedata.combining(char))
+    texto = texto.replace("\u00a0", " ")
+    texto = re.sub(r"[‐‑‒–—―_]", "-", texto)
+    texto = re.sub(r"\s+", " ", texto)
+    return texto.strip().upper()
+
+
+def _tiene_contexto_portfolio(texto_limpio):
+    compacto = re.sub(r"[^A-Z0-9]", "", texto_limpio)
+    return any(palabra in compacto for palabra in PALABRAS_CONTEXTO_PORTFOLIO)
+
+
+def _es_texto_corto_de_rango(texto_limpio):
+    alfanumerico = re.sub(r"[^A-Z0-9]", "", texto_limpio)
+    return len(alfanumerico) <= 8
+
+
+def _patron_rango(rango):
+    inicio, fin = rango.split("-")
+    inicio_flexible = r"\s*".join(inicio)
+    fin_flexible = r"\s*".join(fin)
+    return rf"(?<!\d){inicio_flexible}\s*[- ]?\s*{fin_flexible}(?!\d)"
+
+
+def normalizar_portfolio(texto):
+    texto_limpio = limpiar_texto_pdf(texto)
+    if not texto_limpio:
         return None
 
-    texto = str(texto).strip()
-    for patron, nombre_std in PORTFOLIO_MAPPING.items():
-        if re.search(patron, texto):
+    compacto = re.sub(r"[^A-Z0-9]", "", texto_limpio)
+
+    if "INICIAL" in compacto:
+        return "SB INICIAL"
+
+    if (
+        "PENSION" in compacto
+        or "PENSIONES" in compacto
+        or re.search(r"\bCERO\b", texto_limpio)
+        or re.search(r"\bSB\s*0\b", texto_limpio)
+        or re.search(r"\bBASICA\s*0\b", texto_limpio)
+        or compacto in {"0", "SB0", "CERO", "SBCERO", "BASICACERO"}
+    ):
+        return "SB PENSIONES"
+
+    tiene_contexto = _tiene_contexto_portfolio(texto_limpio)
+    es_corto = _es_texto_corto_de_rango(texto_limpio)
+    for rango, nombre_std in RANGOS_SIEFORE.items():
+        if re.search(_patron_rango(rango), texto_limpio) and (tiene_contexto or es_corto):
             return nombre_std
-    return texto
+
+    return None
+
+
+def detectar_portfolio_en_lineas(lineas, limite=30, ventana=3):
+    lineas_limpias = [limpiar_texto_pdf(linea) for linea in lineas[:limite]]
+
+    for linea in lineas_limpias:
+        portfolio = normalizar_portfolio(linea)
+        if portfolio:
+            return portfolio
+
+    for idx in range(len(lineas_limpias)):
+        bloque = " ".join(lineas_limpias[idx : idx + ventana])
+        portfolio = normalizar_portfolio(bloque)
+        if portfolio:
+            return portfolio
+
+    return None
+
+
+def extraer_importes(texto):
+    importes = []
+    for match in re.finditer(r"(?:\$|MXN|MXP|USD)?\s*([0-9]{1,3}(?:,[0-9]{3})*\.[0-9]{2})", texto, re.IGNORECASE):
+        try:
+            importes.append(float(match.group(1).replace(",", "")))
+        except ValueError:
+            continue
+    return importes
+
+
+def seleccionar_importe_interes(texto):
+    importes = extraer_importes(texto)
+    if not importes:
+        return None
+
+    texto_limpio = limpiar_texto_pdf(texto)
+    if "TASA" in texto_limpio and len(importes) > 1 and importes[0] <= 100:
+        return importes[1]
+
+    return importes[0]
 
 
 def portfolio_a_fondo(portfolio):
@@ -114,16 +191,18 @@ def leer_bbva_pdf(ruta_pdf):
             importes_por_linea[idx] = float(match.group(1).replace(",", ""))
 
     filas = []
+    consumir_hasta = -1
     for i, linea in enumerate(lineas):
-        alias_match = re.search(
-            r"SB\s+(?:(\d{2})[- ](\d{2})|INICIAL|PENSIONES)",
-            linea,
-            re.IGNORECASE,
-        )
-        if not alias_match:
+        if i <= consumir_hasta:
             continue
 
-        portfolio = normalizar_portfolio(alias_match.group(0).strip())
+        bloque = " ".join(lineas[i : i + 3])
+        portfolio = normalizar_portfolio(bloque)
+        if not portfolio:
+            continue
+
+        consumir_hasta = i + 2
+
         importe = None
         for offset in range(-2, 3):
             idx = i + offset
@@ -158,24 +237,21 @@ def leer_banregio_pdf(ruta_pdf):
             texto = page.extract_text() or ""
             lineas = texto.splitlines()
 
-            portfolio = None
-            for linea in lineas[:15]:
-                candidato = normalizar_portfolio(linea)
-                if candidato and str(candidato).startswith("SB"):
-                    portfolio = candidato
-                    break
+            portfolio = detectar_portfolio_en_lineas(lineas, limite=25, ventana=4)
 
             if not portfolio:
                 continue
 
-            for linea in lineas:
-                if "interes" in linea.lower() or "rendimiento" in linea.lower():
-                    match = re.search(r"\$\s*([\d,]+\.\d{2})", linea)
-                    if match:
+            for idx, linea in enumerate(lineas):
+                linea_limpia = limpiar_texto_pdf(linea)
+                if "INTERES" in linea_limpia or "RENDIMIENTO" in linea_limpia:
+                    bloque = " ".join(lineas[idx : idx + 3])
+                    importe = seleccionar_importe_interes(bloque)
+                    if importe:
                         filas.append(
                             {
                                 "Portfolio": portfolio,
-                                "Intereses": float(match.group(1).replace(",", "")),
+                                "Intereses": importe,
                                 "Moneda": None,
                                 "Banco": "Banregio",
                             }
@@ -201,32 +277,18 @@ def leer_scotiabank_pdf(ruta_pdf):
             texto = page.extract_text() or ""
             lineas = texto.splitlines()
 
-            portfolio = None
-            for linea in lineas[:25]:
-                candidato = normalizar_portfolio(" ".join(linea.split()))
-                if candidato and str(candidato).startswith("SB"):
-                    portfolio = candidato
-                    break
-
-            if not portfolio:
-                rangos_validos = {"60-64", "65-69", "70-74", "75-79", "80-84", "85-89", "90-94", "95-99"}
-                for linea in lineas[:30]:
-                    match = re.search(r"(\d{2})[- ](\d{2})", linea)
-                    if match:
-                        rango = f"{match.group(1)}-{match.group(2)}"
-                        if rango in rangos_validos:
-                            portfolio = normalizar_portfolio(f"SB {rango}")
-                            break
+            portfolio = detectar_portfolio_en_lineas(lineas, limite=40, ventana=4)
 
             if not portfolio:
                 continue
 
             moneda = None
             for linea in lineas[:20]:
-                if "Moneda" in linea:
-                    if "USD" in linea.upper():
+                linea_limpia = limpiar_texto_pdf(linea)
+                if "MONEDA" in linea_limpia:
+                    if "USD" in linea_limpia:
                         moneda = "USD"
-                    elif "MXN" in linea.upper():
+                    elif "MXN" in linea_limpia:
                         moneda = "MXN"
                     break
             if not moneda:
@@ -234,11 +296,12 @@ def leer_scotiabank_pdf(ruta_pdf):
                 moneda = "USD" if "USD" in nombre_archivo else "MXN"
 
             importe = None
-            for linea in lineas:
-                if "RENDIMIENTO" in linea.upper() and "TASA" in linea.upper():
-                    matches = re.findall(r"([\d,]+\.\d{2})", linea)
-                    if matches:
-                        importe = float(matches[0].replace(",", ""))
+            for idx, linea in enumerate(lineas):
+                linea_limpia = limpiar_texto_pdf(linea)
+                if "RENDIMIENTO" in linea_limpia or "INTERES" in linea_limpia:
+                    bloque = " ".join(lineas[idx : idx + 3])
+                    importe = seleccionar_importe_interes(bloque)
+                    if importe:
                         break
 
             if importe and importe > 0:
