@@ -148,6 +148,24 @@ def seleccionar_importe_interes(texto):
     return importes[0]
 
 
+def bloques_movimientos_bbva(lineas):
+    bloques = []
+    actual = []
+
+    for linea in lineas:
+        if re.match(r"^\s*\d{10}\b", linea):
+            if actual:
+                bloques.append(actual)
+            actual = [linea]
+        elif actual:
+            actual.append(linea)
+
+    if actual:
+        bloques.append(actual)
+
+    return bloques
+
+
 def portfolio_a_fondo(portfolio):
     return FONDO_MAPPING.get(portfolio, portfolio)
 
@@ -193,30 +211,23 @@ def leer_bbva_pdf(ruta_pdf):
         moneda = "MXN"
         patron_importe = r"MX[NP]\s+([\d,]+\.\d{2})"
 
-    importes_por_linea = {}
-    for idx, linea in enumerate(lineas):
-        match = re.search(patron_importe, linea)
-        if match:
-            importes_por_linea[idx] = float(match.group(1).replace(",", ""))
-
     filas = []
-    consumir_hasta = -1
-    for i, linea in enumerate(lineas):
-        if i <= consumir_hasta:
+    for bloque_lineas in bloques_movimientos_bbva(lineas):
+        bloque = " ".join(bloque_lineas)
+        bloque_limpio = limpiar_texto_pdf(bloque)
+
+        if "INTERES" not in bloque_limpio and "RENDIMIENTO" not in bloque_limpio:
             continue
 
-        bloque = " ".join(lineas[i : i + 3])
         portfolio = normalizar_portfolio(bloque)
         if not portfolio:
             continue
 
-        consumir_hasta = i + 2
-
         importe = None
-        for offset in range(-2, 3):
-            idx = i + offset
-            if idx in importes_por_linea:
-                importe = importes_por_linea[idx]
+        for linea in bloque_lineas:
+            match = re.search(patron_importe, linea)
+            if match:
+                importe = float(match.group(1).replace(",", ""))
                 break
 
         if importe and importe > 0:
