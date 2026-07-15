@@ -71,6 +71,10 @@ def _patron_rango(rango):
     return rf"(?<!\d){inicio_flexible}\s*[- ]?\s*{fin_flexible}(?!\d)"
 
 
+def _contiene_pensiones(compacto):
+    return "PENSION" in compacto or bool(re.search(r"P[A-Z]{0,4}E[A-Z]{0,4}N[A-Z]{0,4}S[A-Z]{0,4}I[A-Z]{0,4}O[A-Z]{0,4}N[A-Z]{0,4}E[A-Z]{0,4}S", compacto))
+
+
 def normalizar_portfolio(texto):
     texto_limpio = limpiar_texto_pdf(texto)
     if not texto_limpio:
@@ -78,12 +82,17 @@ def normalizar_portfolio(texto):
 
     compacto = re.sub(r"[^A-Z0-9]", "", texto_limpio)
 
-    if "INICIAL" in compacto:
+    if re.search(r"\bFECHA\s+INICIAL\b", texto_limpio):
+        texto_limpio = re.sub(r"\bFECHA\s+INICIAL\b", "FECHA", texto_limpio)
+        compacto = re.sub(r"[^A-Z0-9]", "", texto_limpio)
+
+    if "INICIAL" in compacto and re.search(r"\b(SB|SIEFORE|BASICA|BASICO)\b.*\bINICIAL\b|\bINICIAL\b.*\b(SB|SIEFORE|BASICA|BASICO)\b", texto_limpio):
         return "SB INICIAL"
 
     if (
-        "PENSION" in compacto
-        or "PENSIONES" in compacto
+        _contiene_pensiones(compacto)
+        or ("ASICADE" in compacto and "CUENTA" in compacto)
+        or re.search(r"\bBASICA\s+DE\b", texto_limpio)
         or re.search(r"\bCERO\b", texto_limpio)
         or re.search(r"\bSB\s*0\b", texto_limpio)
         or re.search(r"\bBASICA\s*0\b", texto_limpio)
